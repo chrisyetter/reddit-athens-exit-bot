@@ -1,6 +1,9 @@
 .env
 replied.json
+heartbeat
+*.log
 __pycache__/
 *.pyc
 .venv/
 venv/
+.claude/

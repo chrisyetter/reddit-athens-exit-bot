@@ -16,6 +16,7 @@ import os
 import sys
 import time
 import json
+import signal
 import threading
 import logging
 
@@ -42,9 +43,21 @@ STATE_FILE = os.getenv("STATE_FILE", "replied.json")
 # large values are silently capped by what the API will return.
 BACKFILL_DAYS = float(os.getenv("BACKFILL_DAYS", "0") or "0")
 
+# Watchdog: if a stream stops updating its heartbeat for this many seconds
+# (network wedge, silent hang), exit non-zero so the container's restart policy
+# brings us back. 0 disables the watchdog.
+WATCHDOG_TIMEOUT = float(os.getenv("WATCHDOG_TIMEOUT", "600") or "0")
+# Optional file the watchdog writes the freshest heartbeat to, for an external
+# Docker HEALTHCHECK to read. Empty disables it.
+HEARTBEAT_FILE = os.getenv("HEARTBEAT_FILE", "")
+
 # Simple persistent record of things we've already replied to, so a restart
 # doesn't double-post.
 _state_lock = threading.Lock()
+
+# Per-stream last-alive timestamps, updated by the stream loops and watched by
+# the watchdog thread.
+_heartbeats = {}
 
 
 def load_state():
@@ -162,7 +175,12 @@ def backfill_submissions(reddit, replied, bot_username, days):
 def stream_submissions(reddit, replied, bot_username):
     sub = reddit.subreddit(SUBREDDIT)
     log.info("Watching submissions in r/%s", SUBREDDIT)
-    for post in sub.stream.submissions(skip_existing=True):
+    # pause_after=-1 yields None as soon as we're caught up, so the loop keeps
+    # ticking (and updating the heartbeat) even when nothing new is posted.
+    for post in sub.stream.submissions(skip_existing=True, pause_after=-1):
+        _heartbeats["submissions"] = time.time()
+        if post is None:
+            continue
         text = f"{post.title}\n\n{post.selftext or ''}"
         handle_item(post, "submission", text, replied, bot_username)
 
@@ -170,8 +188,34 @@ def stream_submissions(reddit, replied, bot_username):
 def stream_comments(reddit, replied, bot_username):
     sub = reddit.subreddit(SUBREDDIT)
     log.info("Watching comments in r/%s", SUBREDDIT)
-    for comment in sub.stream.comments(skip_existing=True):
+    for comment in sub.stream.comments(skip_existing=True, pause_after=-1):
+        _heartbeats["comments"] = time.time()
+        if comment is None:
+            continue
         handle_item(comment, "comment", comment.body, replied, bot_username)
+
+
+def watchdog():
+    """Force a restart if any stream goes stale, and (optionally) publish a
+    heartbeat file for an external Docker HEALTHCHECK."""
+    while True:
+        time.sleep(30)
+        now = time.time()
+        if HEARTBEAT_FILE and _heartbeats:
+            try:
+                with open(HEARTBEAT_FILE, "w") as f:
+                    f.write(str(min(_heartbeats.values())))
+            except OSError as e:
+                log.warning("Could not write heartbeat file: %s", e)
+        if WATCHDOG_TIMEOUT <= 0:
+            continue
+        for name, ts in list(_heartbeats.items()):
+            if now - ts > WATCHDOG_TIMEOUT:
+                log.error(
+                    "Watchdog: '%s' stream stale for %.0fs (> %.0fs); exiting "
+                    "for the container to restart.", name, now - ts, WATCHDOG_TIMEOUT,
+                )
+                os._exit(1)
 
 
 def run_stream(target, name, *args):
@@ -187,8 +231,16 @@ def run_stream(target, name, *args):
             time.sleep(30)
 
 
+def _handle_sigterm(signum, _frame):
+    # Docker/Portainer sends SIGTERM on stop; exit promptly so we don't wait for
+    # the 10s SIGKILL grace period.
+    log.info("Received signal %s; shutting down.", signum)
+    sys.exit(0)
+
+
 def main():
     log.info("Starting Athens Loop bot (DRY_RUN=%s)", DRY_RUN)
+    signal.signal(signal.SIGTERM, _handle_sigterm)
     reddit, bot_username = build_reddit()
     replied = load_state()
     log.info("Loaded %d previously-replied items", len(replied))
@@ -207,6 +259,7 @@ def main():
             args=(stream_comments, "comments", reddit, replied, bot_username),
             daemon=True,
         ),
+        threading.Thread(target=watchdog, daemon=True),
     ]
     for t in threads:
         t.start()

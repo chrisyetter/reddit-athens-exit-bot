@@ -1,0 +1,38 @@
+# Portainer stack for the Athens Loop exit bot (self-hosted, e.g. Synology + Docker).
+#
+# In Portainer: Stacks -> Add stack -> Web editor -> paste this file, then add the
+# REDDIT_* values under "Environment variables" and Deploy. The values are
+# substituted into ${...} below, so no credentials live in this file.
+#
+# `restart: unless-stopped` means Docker brings the bot back automatically on
+# NAS reboot / Docker restart, with no manual intervention.
+
+services:
+  athens-loop-bot:
+    image: ghcr.io/chrisyetter/reddit-athens-exit-bot:latest
+    container_name: athens-loop-bot
+    restart: unless-stopped
+    environment:
+      # --- Required secrets (set these in Portainer's Environment variables) ---
+      REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID}
+      REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET}
+      REDDIT_USERNAME: ${REDDIT_USERNAME}
+      REDDIT_PASSWORD: ${REDDIT_PASSWORD}
+      REDDIT_USER_AGENT: ${REDDIT_USER_AGENT}
+      # --- Behaviour (safe defaults; override in Portainer if you like) ---
+      SUBREDDIT: ${SUBREDDIT:-Athens}
+      # Start in dry-run mode. Set DRY_RUN=false in Portainer to post for real.
+      DRY_RUN: ${DRY_RUN:-true}
+      BACKFILL_DAYS: ${BACKFILL_DAYS:-0}
+      # Paths on the persistent volume below (also baked into the image).
+      STATE_FILE: /data/replied.json
+      HEARTBEAT_FILE: /data/heartbeat
+    volumes:
+      # Persists the "already replied" list across restarts so the bot never
+      # double-posts after a reboot.
+      - athens-loop-bot-data:/data
+    # Tiny footprint — plenty for a streaming bot on an Atom-class NAS.
+    mem_limit: 256m
+
+volumes:
+  athens-loop-bot-data:
