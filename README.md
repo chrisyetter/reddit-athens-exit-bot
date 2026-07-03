@@ -68,14 +68,51 @@ No credentials needed:
 python test_matcher.py
 ```
 
+## Self-hosting with Docker / Portainer
+
+The bot ships as a small container image, published to GitHub Container Registry
+by CI (`.github/workflows/docker-publish.yml`) on every push to `main`. It runs
+as a background worker — no exposed ports — and restarts itself automatically on
+reboot.
+
+**One-time: make the image pullable by your NAS.** After the first CI run
+succeeds, the package `ghcr.io/<you>/reddit-athens-exit-bot` exists. Either make
+it public (GitHub → your profile → Packages → the package → Package settings →
+Change visibility → Public) so no registry login is needed, or keep it private
+and add GHCR registry credentials in Portainer.
+
+**Deploy in Portainer:**
+1. **Stacks → Add stack → Web editor**, and paste the contents of
+   [`docker-compose.yml`](docker-compose.yml).
+2. Under **Environment variables**, add your Reddit values: `REDDIT_CLIENT_ID`,
+   `REDDIT_CLIENT_SECRET`, `REDDIT_USERNAME`, `REDDIT_PASSWORD`,
+   `REDDIT_USER_AGENT`. Leave `DRY_RUN` at its default (`true`) for the first run.
+3. **Deploy the stack.** Check the container logs — you should see
+   `Authenticated as u/<bot>` and `Watching submissions/comments`.
+4. When the logs look right, set `DRY_RUN=false` in the stack's environment
+   variables and redeploy to go live.
+
+Notes:
+- `restart: unless-stopped` means Docker starts the bot automatically whenever
+  the NAS / Docker / Portainer restarts — no manual intervention.
+- **Run exactly one instance.** Two would both reply and double-post.
+- Dedup state (`replied.json`) and the heartbeat live on the `athens-loop-bot-data`
+  volume, so the bot never re-replies after a restart.
+- A `HEALTHCHECK` reports health to Portainer from the bot's heartbeat; if a
+  Reddit stream silently wedges, an internal watchdog exits so Docker restarts it.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `bot.py` | Main bot — streams r/Athens submissions + comments, posts replies |
 | `exits.py` | Exit list data + matching logic + reply formatting |
+| `healthcheck.py` | Container health probe (reads the heartbeat file) |
 | `test_matcher.py` | Offline sanity checks for the matcher |
-| `.env.example` | Template for credentials/config |
+| `Dockerfile` | Builds the container image |
+| `docker-compose.yml` | Portainer stack definition (self-hosting) |
+| `.github/workflows/docker-publish.yml` | CI: build & publish image to GHCR |
+| `.env.example` | Template for credentials/config (local runs) |
 | `replied.json` | Auto-created; tracks already-answered items |
 
 ## Notes & etiquette
@@ -86,5 +123,6 @@ python test_matcher.py
   let the account age and build a little karma before going live.
 - Tune the trigger words in `exits.py` (`_LOOP_CONTEXT`) and the `roads` lists
   if you see false positives/negatives in the dry-run logs.
-- To run it continuously, use `nohup`, `tmux`, a `systemd` service, or a small
+- To run it continuously, deploy the container (see *Self-hosting with Docker /
+  Portainer* above), or use `nohup` / `tmux` / a `systemd` service on any
   always-on host.

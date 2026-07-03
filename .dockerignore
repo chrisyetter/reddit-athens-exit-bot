@@ -1,0 +1,21 @@
+# Never ship secrets or local state into the image — secrets are injected as
+# env vars at runtime (Portainer stack / docker-compose).
+.env
+replied.json
+heartbeat
+*.log
+
+# Local dev cruft
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Git / CI / docs / compose — not needed inside the runtime image
+.git/
+.gitignore
+.dockerignore
+.github/
+docker-compose.yml
+README.md
+LICENSE
