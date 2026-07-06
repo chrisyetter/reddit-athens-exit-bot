@@ -43,6 +43,14 @@ STATE_FILE = os.getenv("STATE_FILE", "replied.json")
 # large values are silently capped by what the API will return.
 BACKFILL_DAYS = float(os.getenv("BACKFILL_DAYS", "0") or "0")
 
+# How long to wait between stream polls when caught up (no new items). PRAW's
+# pause_after=-1 yields as soon as we're caught up WITHOUT any internal backoff,
+# so without this throttle each stream would poll Reddit's API in a tight loop
+# and quickly trip Reddit's ~100 requests/minute rate limit (HTTP 429). At the
+# default 15s, the two streams together make ~8 requests/minute -- well under
+# the limit -- while keeping the watchdog heartbeat fresh.
+POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15") or "15")
+
 # Watchdog: if a stream stops updating its heartbeat for this many seconds
 # (network wedge, silent hang), exit non-zero so the container's restart policy
 # brings us back. 0 disables the watchdog.
@@ -180,6 +188,9 @@ def stream_submissions(reddit, replied, bot_username):
     for post in sub.stream.submissions(skip_existing=True, pause_after=-1):
         _heartbeats["submissions"] = time.time()
         if post is None:
+            # Caught up: throttle before polling again so we don't hammer the
+            # API. PRAW does no backoff of its own with pause_after=-1.
+            time.sleep(POLL_INTERVAL)
             continue
         text = f"{post.title}\n\n{post.selftext or ''}"
         handle_item(post, "submission", text, replied, bot_username)
@@ -191,6 +202,8 @@ def stream_comments(reddit, replied, bot_username):
     for comment in sub.stream.comments(skip_existing=True, pause_after=-1):
         _heartbeats["comments"] = time.time()
         if comment is None:
+            # Caught up: throttle before polling again (see stream_submissions).
+            time.sleep(POLL_INTERVAL)
             continue
         handle_item(comment, "comment", comment.body, replied, bot_username)
 
@@ -219,16 +232,24 @@ def watchdog():
 
 
 def run_stream(target, name, *args):
-    """Run a stream in a loop, recovering from transient network errors."""
+    """Run a stream in a loop, recovering from transient network errors.
+
+    Reconnect delay backs off exponentially (30s -> 60s -> ... capped at 5min)
+    so a persistent condition like rate limiting (HTTP 429) doesn't get
+    re-triggered by an immediate retry. Each iteration only ends by raising, so
+    every pass through the loop is a failure; there is no success case to reset.
+    """
+    delay = 30
+    max_delay = 300
     while True:
         try:
             target(*args)
         except prawcore.exceptions.PrawcoreException as e:
-            log.warning("%s stream error: %s; reconnecting in 30s", name, e)
-            time.sleep(30)
+            log.warning("%s stream error: %s; reconnecting in %ds", name, e, delay)
         except Exception:
-            log.exception("%s stream crashed; reconnecting in 30s", name)
-            time.sleep(30)
+            log.exception("%s stream crashed; reconnecting in %ds", name, delay)
+        time.sleep(delay)
+        delay = min(delay * 2, max_delay)
 
 
 def _handle_sigterm(signum, _frame):

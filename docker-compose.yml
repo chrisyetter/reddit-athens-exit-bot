@@ -24,6 +24,10 @@ services:
       # Start in dry-run mode. Set DRY_RUN=false in Portainer to post for real.
       DRY_RUN: ${DRY_RUN:-true}
       BACKFILL_DAYS: ${BACKFILL_DAYS:-0}
+      # Seconds between stream polls when caught up. The default keeps both
+      # streams well under Reddit's ~100 req/min limit; raise it if you ever see
+      # "429 HTTP response" warnings in the logs.
+      POLL_INTERVAL: ${POLL_INTERVAL:-15}
       # Paths on the persistent volume below (also baked into the image).
       STATE_FILE: /data/replied.json
       HEARTBEAT_FILE: /data/heartbeat

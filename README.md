@@ -121,6 +121,10 @@ Notes:
   and consider messaging the mods — many subreddits require bots to be approved.
 - New Reddit accounts have low rate limits and may be auto-flagged as spam;
   let the account age and build a little karma before going live.
+- If the logs show repeated `429 HTTP response` warnings, the bot is polling
+  faster than Reddit allows. Raise `POLL_INTERVAL` (seconds between polls when
+  caught up; default `15`) — the two streams together should stay well under
+  Reddit's ~100 requests/minute limit.
 - Tune the trigger words in `exits.py` (`_LOOP_CONTEXT`) and the `roads` lists
   if you see false positives/negatives in the dry-run logs.
 - To run it continuously, deploy the container (see *Self-hosting with Docker /
